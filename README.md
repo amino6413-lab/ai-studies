@@ -11,13 +11,22 @@
 | 03.딥러닝 | CNN, RNN, LSTM, GRU 실습 |
 | 04.LLM | LLM 활용 실습 |
 
-##  딥러닝 실습 내용
+## 📚 실습 내용
 
+###  Flask
+- 추가 예정
+
+###  머신러닝
+- 추가 예정
+
+###  딥러닝
 - 활성화 함수 (Sigmoid, Tanh, ReLU)
 - 선형회귀 (TensorFlow / Keras)
 - CNN - MNIST 손글씨 분류
 - RNN / LSTM / GRU - 시계열 예측
 
-## 🛠 사용 기술
+### 💬 LLM
+- 추가 예정
 
-Python · TensorFlow · Keras · Scikit-learn · Streamlit
+## 🛠 사용 기술
+Python · TensorFlow · Keras · Scikit-learn · Streamlit · Flask
