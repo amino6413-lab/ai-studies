@@ -1,101 +1,78 @@
+#!/usr/bin/env python
+# coding: utf-8
+
 import os
 import warnings
 warnings.filterwarnings('ignore')
 
-import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 import seaborn as sns
 
-matplotlib.rcParams['font.family'] = 'Malgun Gothic'  # 윈도우 한글 폰트
-matplotlib.rcParams['axes.unicode_minus'] = False      # 마이너스 기호 깨짐 방지
+matplotlib.rcParams['font.family'] = 'Malgun Gothic'
+matplotlib.rcParams['axes.unicode_minus'] = False
 
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
+# =====================
+# 1. 데이터 로드
+# =====================
+df = pd.read_csv('archive/Historical Product Demand.csv')
+print("=" * 50)
+print("1. 데이터 로드")
+print("=" * 50)
+print(df.shape)
+print(df.head(10))
+print(df.dtypes)
 
-# ─────────────────────────────────────────────────────────────
-# 페이지 기본 설정
-# ─────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="수요 예측 대시보드",
-    page_icon="🏭",
-    layout="wide"
-)
 
-st.title("🏭 제품 수요 예측 대시보드")
-st.markdown("과거 주문 데이터를 분석하여 **미래 수요를 예측**하고 **적정 재고**를 제안합니다.")
+# =====================
+# 2. 결측치 및 중복값 통계 (전처리 전)
+# =====================
+print("\n" + "=" * 50)
+print("2. 전처리 전 - 결측치 통계")
+print("=" * 50)
+print(df.isnull().sum())
+print(f"\n중복 행: {df.duplicated().sum()}")
+print(f"데이터 크기: {df.shape[0]:,} 행, {df.shape[1]} 열")
 
-# ─────────────────────────────────────────────────────────────
-# 데이터 로드 및 전처리 (캐싱으로 한 번만 실행)
-# ─────────────────────────────────────────────────────────────
-@st.cache_data
-def load_data():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(base_dir, 'archive', 'Historical Product Demand.csv')
-    df = pd.read_csv(path)
 
-    # Order_Demand 정리
-    # "(100)" 형태 → 음수, "100 " 형태 → 양수 숫자로 변환
-    def clean_demand(val):
-        val = str(val).strip()
-        if val.startswith('(') and val.endswith(')'):
-            try:
-                return -float(val[1:-1].replace(',', ''))
-            except:
-                return np.nan
+# =====================
+# 3. 전처리
+# =====================
+def clean_demand(val):
+    val = str(val).strip()
+    if val.startswith('(') and val.endswith(')'):
         try:
-            return float(val.replace(',', ''))
+            return -float(val[1:-1].replace(',', ''))
         except:
             return np.nan
+    try:
+        return float(val.replace(',', ''))
+    except:
+        return np.nan
 
-    df['Order_Demand'] = df['Order_Demand'].apply(clean_demand)
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+df['Order_Demand'] = df['Order_Demand'].apply(clean_demand)
+df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+df = df.dropna(subset=['Date', 'Order_Demand'])
+df = df[df['Order_Demand'] > 0]
+df['YearMonth'] = df['Date'].dt.to_period('M')
+df['Year']  = df['Date'].dt.year
+df['Month'] = df['Date'].dt.month
 
-    # 결측치 및 음수 주문 제거
-    df = df.dropna(subset=['Date', 'Order_Demand'])
-    df = df[df['Order_Demand'] > 0]
+print("\n" + "=" * 50)
+print("3. 전처리 후 - 결측치 통계")
+print("=" * 50)
+print(df.isnull().sum())
+print(f"\n전처리 후 데이터: {df.shape[0]:,} 행")
 
-    # 날짜 파생 변수 생성
-    df['YearMonth'] = df['Date'].dt.to_period('M')
-    df['Year']  = df['Date'].dt.year
-    df['Month'] = df['Date'].dt.month
 
-    return df
+# =====================
+# 4. 카테고리 선택 및 월별 집계
+# =====================
+top_category = df['Product_Category'].value_counts().index[0]
+filtered = df[df['Product_Category'] == top_category]
 
-df = load_data()
-
-# ─────────────────────────────────────────────────────────────
-# 사이드바 - 사용자 선택 옵션
-# ─────────────────────────────────────────────────────────────
-st.sidebar.header("⚙️ 설정")
-
-categories  = sorted(df['Product_Category'].unique())
-warehouses  = ['전체'] + sorted(df['Warehouse'].unique())
-
-selected_category  = st.sidebar.selectbox("카테고리 선택", categories)
-selected_warehouse = st.sidebar.selectbox("창고 선택", warehouses)
-predict_months     = st.sidebar.slider("예측 기간 (개월)", min_value=3, max_value=12, value=6)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**모델:** LSTM (Long Short-Term Memory)")
-st.sidebar.markdown("**학습 데이터:** 2011 ~ 2017년")
-
-# ─────────────────────────────────────────────────────────────
-# 데이터 필터링
-# ─────────────────────────────────────────────────────────────
-if selected_warehouse == '전체':
-    filtered = df[df['Product_Category'] == selected_category].copy()
-else:
-    filtered = df[
-        (df['Product_Category'] == selected_category) &
-        (df['Warehouse'] == selected_warehouse)
-    ].copy()
-
-# 월별 합계 집계
 monthly = (
     filtered
     .groupby('YearMonth')['Order_Demand']
@@ -103,278 +80,291 @@ monthly = (
     .reset_index()
     .sort_values('YearMonth')
 )
-monthly['date'] = monthly['YearMonth'].dt.to_timestamp()
+monthly['date']  = monthly['YearMonth'].dt.to_timestamp()
 monthly['year']  = monthly['YearMonth'].dt.year
 monthly['month'] = monthly['YearMonth'].dt.month
 
-# ─────────────────────────────────────────────────────────────
-# 탭 구성
-# ─────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📈 수요 트렌드", "🔮 수요 예측 (LSTM)", "📦 적정 재고 분석"])
-
-# ═══════════════════════════════════════════════════
-# TAB 1 : 수요 트렌드
-# ═══════════════════════════════════════════════════
-with tab1:
-
-    # 요약 지표
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("총 주문량",     f"{filtered['Order_Demand'].sum():,.0f}")
-    col2.metric("월 평균 주문량", f"{monthly['Order_Demand'].mean():,.0f}")
-    col3.metric("월 최대 주문량", f"{monthly['Order_Demand'].max():,.0f}")
-    col4.metric("월 최소 주문량", f"{monthly['Order_Demand'].min():,.0f}")
-
-    st.markdown("---")
-
-    # 월별 주문량 추이 그래프
-    st.subheader("📊 월별 주문량 추이")
-    fig1, ax1 = plt.subplots(figsize=(13, 4))
-    ax1.plot(monthly['date'], monthly['Order_Demand'],
-             color='steelblue', linewidth=1.8, label='실제 주문량')
-    ax1.fill_between(monthly['date'], monthly['Order_Demand'], alpha=0.25, color='steelblue')
-    avg_line = monthly['Order_Demand'].mean()
-    ax1.axhline(avg_line, color='orange', linestyle='--', linewidth=1.2, label=f'평균 ({avg_line:,.0f})')
-    ax1.set_xlabel("날짜")
-    ax1.set_ylabel("주문량")
-    ax1.set_title(f"{selected_category} | {selected_warehouse} — 월별 주문량 추이")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    st.pyplot(fig1)
-    plt.close()
-
-    # 연도별 x 월별 히트맵 (계절성 확인)
-    st.subheader("🗓️ 연도 × 월 주문량 히트맵 (계절성 패턴)")
-    pivot = monthly.pivot_table(
-        values='Order_Demand', index='year', columns='month', aggfunc='sum'
-    )
-    pivot.columns = ['1월','2월','3월','4월','5월','6월',
-                     '7월','8월','9월','10월','11월','12월']
-
-    fig2, ax2 = plt.subplots(figsize=(13, 4))
-    sns.heatmap(pivot, annot=True, fmt='.0f', cmap='YlOrRd',
-                linewidths=0.5, ax=ax2)
-    ax2.set_title("연도별 월별 주문량 (색이 진할수록 수요 높음)")
-    ax2.set_xlabel("월")
-    ax2.set_ylabel("연도")
-    st.pyplot(fig2)
-    plt.close()
-
-    st.info("💡 **히트맵 보는 법**: 색이 진한 달 = 수요 많음 → 생산 미리 증량 필요")
+print(f"\n선택 카테고리: {top_category}")
+print(f"월별 데이터: {len(monthly)}개월")
 
 
-# ═══════════════════════════════════════════════════
-# TAB 2 : 수요 예측 (LSTM)
-# ═══════════════════════════════════════════════════
-with tab2:
-    st.subheader(f"🔮 향후 {predict_months}개월 수요 예측")
+# =====================
+# 5. Histogram - Order_Demand 분포
+# =====================
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    if len(monthly) < 15:
-        st.warning("⚠️ 데이터가 부족합니다 (최소 15개월 필요). 다른 카테고리 또는 '전체' 창고를 선택해 주세요.")
-    else:
-        st.markdown(f"""
-        - **학습 데이터**: {monthly['date'].min().strftime('%Y년 %m월')} ~ {monthly['date'].max().strftime('%Y년 %m월')}
-        - **모델**: LSTM (과거 12개월 패턴 → 다음 달 예측)
-        - **예측 기간**: {predict_months}개월
-        """)
+# 전체 주문량 분포
+axes[0].hist(df['Order_Demand'], bins=50, color='steelblue', edgecolor='white')
+axes[0].set_title('Order_Demand 전체 분포 (Histogram)', fontsize=13)
+axes[0].set_xlabel('주문량')
+axes[0].set_ylabel('빈도')
+axes[0].axvline(df['Order_Demand'].mean(), color='orange', linestyle='--',
+                label=f"평균: {df['Order_Demand'].mean():,.0f}")
+axes[0].legend()
 
-        if st.button("🚀 예측 실행", type="primary"):
-            with st.spinner("LSTM 모델 학습 중... (약 10~20초)"):
+# 월별 집계 주문량 분포
+axes[1].hist(monthly['Order_Demand'], bins=20, color='coral', edgecolor='white')
+axes[1].set_title(f'{top_category} 월별 주문량 분포', fontsize=13)
+axes[1].set_xlabel('월별 주문량')
+axes[1].set_ylabel('빈도')
+axes[1].axvline(monthly['Order_Demand'].mean(), color='navy', linestyle='--',
+                label=f"평균: {monthly['Order_Demand'].mean():,.0f}")
+axes[1].legend()
 
-                TIME_STEPS = 12  # 과거 12개월을 보고 다음 달 예측
-
-                values = monthly['Order_Demand'].values.reshape(-1, 1)
-
-                # 정규화 (0~1 사이로 압축)
-                scaler = MinMaxScaler()
-                scaled = scaler.fit_transform(values)
-
-                # 시퀀스 생성
-                X, y = [], []
-                for i in range(len(scaled) - TIME_STEPS):
-                    X.append(scaled[i : i + TIME_STEPS])
-                    y.append(scaled[i + TIME_STEPS])
-                X, y = np.array(X), np.array(y)
-
-                # LSTM 모델 구성
-                model = Sequential([
-                    LSTM(64, return_sequences=True, input_shape=(TIME_STEPS, 1)),
-                    Dropout(0.2),
-                    LSTM(32, return_sequences=False),
-                    Dropout(0.2),
-                    Dense(1)
-                ])
-                model.compile(optimizer='adam', loss='mse')
-
-                # 학습 (EarlyStopping으로 과적합 방지)
-                model.fit(
-                    X, y,
-                    epochs=150,
-                    batch_size=8,
-                    verbose=0,
-                    callbacks=[EarlyStopping(patience=15, restore_best_weights=True)]
-                )
-
-                # 미래 predict_months 개월 예측
-                current_seq = scaled[-TIME_STEPS:].copy()
-                predictions = []
-
-                for _ in range(predict_months):
-                    pred = model.predict(
-                        current_seq.reshape(1, TIME_STEPS, 1), verbose=0
-                    )
-                    predictions.append(pred[0, 0])
-                    # 시퀀스를 한 칸 밀고 예측값 추가
-                    current_seq = np.append(current_seq[1:], pred).reshape(-1, 1)
-
-                # 역정규화 (0~1 → 원래 주문량 단위로)
-                pred_values = scaler.inverse_transform(
-                    np.array(predictions).reshape(-1, 1)
-                )
-                pred_values = np.maximum(pred_values, 0)  # 음수 방지
-
-                # 예측 날짜 생성
-                last_date  = monthly['date'].max()
-                pred_dates = pd.date_range(last_date, periods=predict_months + 1, freq='MS')[1:]
-
-            st.success("✅ 예측 완료!")
-
-            # 예측 결과 그래프
-            fig3, ax3 = plt.subplots(figsize=(13, 5))
-            ax3.plot(monthly['date'], monthly['Order_Demand'],
-                     color='steelblue', linewidth=1.8, label='실제 수요')
-            ax3.plot(pred_dates, pred_values,
-                     color='crimson', linewidth=2.2, linestyle='--',
-                     marker='o', markersize=6, label='예측 수요')
-            # 예측 불확실성 범위 (±15%)
-            ax3.fill_between(
-                pred_dates,
-                pred_values.flatten() * 0.85,
-                pred_values.flatten() * 1.15,
-                alpha=0.2, color='crimson', label='예측 범위 (±15%)'
-            )
-            ax3.axvline(x=last_date, color='gray', linestyle=':', alpha=0.6, label='예측 시작점')
-            ax3.set_title(f"{selected_category} 수요 예측 결과")
-            ax3.set_xlabel("날짜")
-            ax3.set_ylabel("주문량")
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
-            st.pyplot(fig3)
-            plt.close()
-
-            # 예측 수치 테이블
-            st.subheader("📋 월별 예측 결과")
-            monthly_avg = monthly['Order_Demand'].mean()
-
-            pred_df = pd.DataFrame({
-                '예측 월':   pred_dates.strftime('%Y년 %m월'),
-                '예측 수요량': pred_values.flatten().astype(int),
-            })
-
-            # 평균 대비 상태 판단
-            def status(val):
-                if val > monthly_avg * 1.3:
-                    return "⚠️ 급등 예상 — 생산 증량 권장"
-                elif val < monthly_avg * 0.7:
-                    return "📉 감소 예상 — 생산 축소 검토"
-                else:
-                    return "✅ 정상 범위"
-
-            pred_df['상태'] = pred_df['예측 수요량'].apply(status)
-            st.dataframe(pred_df, use_container_width=True, hide_index=True)
-
-            # 경고 메시지
-            max_pred = pred_values.max()
-            if max_pred > monthly_avg * 1.3:
-                st.warning(f"⚠️ 예측 기간 중 최대 **{max_pred:,.0f}개** 수요 발생 가능 → 사전 생산 계획 필요!")
+plt.tight_layout()
+plt.savefig('01_histogram.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 01_histogram.png 저장 완료")
 
 
-# ═══════════════════════════════════════════════════
-# TAB 3 : 적정 재고 분석
-# ═══════════════════════════════════════════════════
-with tab3:
-    st.subheader("📦 안전재고 & 적정 버퍼 물량 분석")
+# =====================
+# 6. Heatmap - 연도 x 월 계절성
+# =====================
+pivot = monthly.pivot_table(
+    values='Order_Demand', index='year', columns='month', aggfunc='sum'
+)
+pivot.columns = ['1월','2월','3월','4월','5월','6월',
+                 '7월','8월','9월','10월','11월','12월']
 
-    monthly_avg = monthly['Order_Demand'].mean()
-    monthly_std = monthly['Order_Demand'].std()
-    monthly_max = monthly['Order_Demand'].max()
-    monthly_min = monthly['Order_Demand'].min()
+fig, ax = plt.subplots(figsize=(14, 5))
+sns.heatmap(pivot, annot=True, fmt='.0f', cmap='YlOrRd',
+            linewidths=0.5, ax=ax)
+ax.set_title(f'{top_category} — 연도×월 주문량 히트맵 (계절성 패턴)', fontsize=13)
+ax.set_xlabel('월')
+ax.set_ylabel('연도')
+plt.tight_layout()
+plt.savefig('02_heatmap.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 02_heatmap.png 저장 완료")
 
-    # 서비스 레벨별 안전재고 계산
-    # 공식: 안전재고 = Z값 × 수요 표준편차
-    safety_90 = 1.282 * monthly_std  # 90% 서비스 레벨
-    safety_95 = 1.645 * monthly_std  # 95% 서비스 레벨 (일반 권장)
-    safety_99 = 2.326 * monthly_std  # 99% 서비스 레벨 (고위험)
 
-    col1, col2 = st.columns(2)
+# =====================
+# 7. 월별 주문량 추이
+# =====================
+fig, ax = plt.subplots(figsize=(14, 4))
+ax.plot(monthly['date'], monthly['Order_Demand'],
+        color='steelblue', linewidth=1.8, label='실제 주문량')
+ax.fill_between(monthly['date'], monthly['Order_Demand'],
+                alpha=0.2, color='steelblue')
+avg = monthly['Order_Demand'].mean()
+ax.axhline(avg, color='orange', linestyle='--',
+           label=f'평균 ({avg:,.0f})')
+ax.set_title(f'{top_category} — 월별 주문량 추이', fontsize=13)
+ax.set_xlabel('날짜')
+ax.set_ylabel('주문량')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('03_trend.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 03_trend.png 저장 완료")
 
-    with col1:
-        st.markdown("### 📊 수요 통계 요약")
-        stats_df = pd.DataFrame({
-            '항목': ['월 평균 주문량', '월 최대 주문량', '월 최소 주문량',
-                    '표준편차', '변동계수(CV)'],
-            '수치': [
-                f"{monthly_avg:,.0f}",
-                f"{monthly_max:,.0f}",
-                f"{monthly_min:,.0f}",
-                f"{monthly_std:,.0f}",
-                f"{(monthly_std/monthly_avg)*100:.1f}%"
-            ]
-        })
-        st.dataframe(stats_df, use_container_width=True, hide_index=True)
-        st.caption("변동계수(CV)가 높을수록 수요 변동이 심함 → 안전재고 더 필요")
 
-    with col2:
-        st.markdown("### 🛡️ 서비스 레벨별 권장 안전재고")
-        safety_df = pd.DataFrame({
-            '서비스 레벨': ['90%', '95% ⭐ 권장', '99%'],
-            '안전재고량':  [f"{safety_90:,.0f}", f"{safety_95:,.0f}", f"{safety_99:,.0f}"],
-            '의미':        [
-                '10번 중 1번 재고 부족 감수',
-                '20번 중 1번 재고 부족 감수',
-                '100번 중 1번 재고 부족 감수'
-            ]
-        })
-        st.dataframe(safety_df, use_container_width=True, hide_index=True)
+# =====================
+# 8. 데이터 전처리 - 시퀀스 생성
+# =====================
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-    # 핵심 권장사항
-    surplus_ratio = ((monthly_max / monthly_avg) - 1) * 100
-    st.info(f"""
-    💡 **{selected_category} 권장 생산 대응 가이드**
+TIME_STEPS = 12
+values = monthly['Order_Demand'].values.reshape(-1, 1)
+scaler = MinMaxScaler()
+scaled = scaler.fit_transform(values)
 
-    - ✅ 평상시 기준 생산량: **{monthly_avg:,.0f}개/월**
-    - 🛡️ 최소 안전재고 유지: **{safety_95:,.0f}개** (95% 서비스 레벨 기준)
-    - ⚠️ 최대 수요 대비 여유분: **{(monthly_max - monthly_avg):,.0f}개** (평균 대비 +{surplus_ratio:.0f}%)
-    - 📦 총 권장 보유 재고: **{(monthly_avg + safety_95):,.0f}개**
-    """)
+X, y = [], []
+for i in range(len(scaled) - TIME_STEPS):
+    X.append(scaled[i : i + TIME_STEPS])
+    y.append(scaled[i + TIME_STEPS])
+X, y = np.array(X), np.array(y)
 
-    st.markdown("---")
+split = int(len(X) * 0.8)
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
 
-    # 월별 수요 분포 박스플롯 (계절성 이상치 확인)
-    st.subheader("📅 월별 수요 분포 (박스플롯)")
-    month_label = {1:'1월',2:'2월',3:'3월',4:'4월',5:'5월',6:'6월',
-                   7:'7월',8:'8월',9:'9월',10:'10월',11:'11월',12:'12월'}
-    monthly['month_label'] = monthly['month'].map(month_label)
+print(f"\nX_train: {X_train.shape}, X_test: {X_test.shape}")
 
-    fig4, ax4 = plt.subplots(figsize=(13, 4))
-    order = list(month_label.values())
-    monthly.boxplot(
-        column='Order_Demand',
-        by='month_label',
-        ax=ax4,
-        positions=range(1, 13)
-    )
-    ax4.set_xticks(range(1, 13))
-    ax4.set_xticklabels(order, fontsize=9)
-    ax4.axhline(monthly_avg, color='orange', linestyle='--',
-                linewidth=1.2, label=f'평균 ({monthly_avg:,.0f})')
-    ax4.axhline(monthly_avg + safety_95, color='red', linestyle=':',
-                linewidth=1.0, label=f'안전재고선 ({monthly_avg + safety_95:,.0f})')
-    ax4.set_title("월별 주문량 분포 — 박스가 높은 달 = 수요 불안정")
-    ax4.set_xlabel("월")
-    ax4.set_ylabel("주문량")
-    ax4.legend()
-    plt.suptitle("")
-    st.pyplot(fig4)
-    plt.close()
 
-    st.caption("박스가 넓을수록 그 달의 수요 변동이 심함 → 해당 달 전달부터 재고 선확보 필요")
+# =====================
+# 9. 모델 정의 및 컴파일
+# =====================
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import SimpleRNN, LSTM, GRU, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+
+def build_model(layer_type, units1=64, units2=32):
+    model = Sequential()
+    if layer_type == 'SimpleRNN':
+        model.add(SimpleRNN(units1, return_sequences=True,
+                            input_shape=(TIME_STEPS, 1)))
+        model.add(Dropout(0.2))
+        model.add(SimpleRNN(units2))
+    elif layer_type == 'LSTM':
+        model.add(LSTM(units1, return_sequences=True,
+                       input_shape=(TIME_STEPS, 1)))
+        model.add(Dropout(0.2))
+        model.add(LSTM(units2))
+    elif layer_type == 'GRU':
+        model.add(GRU(units1, return_sequences=True,
+                      input_shape=(TIME_STEPS, 1)))
+        model.add(Dropout(0.2))
+        model.add(GRU(units2))
+    model.add(Dropout(0.2))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+es = EarlyStopping(patience=15, restore_best_weights=True)
+
+def evaluate_model(y_true, y_pred):
+    y_true_inv = scaler.inverse_transform(y_true.reshape(-1,1)).flatten()
+    y_pred_inv = scaler.inverse_transform(y_pred.reshape(-1,1)).flatten()
+    return {
+        'RMSE': mean_squared_error(y_true_inv, y_pred_inv) ** 0.5,
+        'MAE':  mean_absolute_error(y_true_inv, y_pred_inv),
+        'R2':   r2_score(y_true_inv, y_pred_inv)
+    }, y_true_inv, y_pred_inv
+
+
+# =====================
+# 10. 모델 학습 (SimpleRNN)
+# =====================
+print("\n[SimpleRNN 학습 중...]")
+rnn = build_model('SimpleRNN')
+rnn_hist = rnn.fit(X_train, y_train, epochs=150, batch_size=8,
+                   validation_split=0.1, verbose=0, callbacks=[es])
+rnn_pred = rnn.predict(X_test, verbose=0)
+rnn_score, y_true_inv, rnn_inv = evaluate_model(y_test, rnn_pred)
+print(f"SimpleRNN - RMSE: {rnn_score['RMSE']:,.2f} | MAE: {rnn_score['MAE']:,.2f} | R2: {rnn_score['R2']:.4f}")
+
+
+# =====================
+# 11. 모델 학습 (LSTM)
+# =====================
+print("\n[LSTM 학습 중...]")
+lstm = build_model('LSTM')
+lstm_hist = lstm.fit(X_train, y_train, epochs=150, batch_size=8,
+                     validation_split=0.1, verbose=0, callbacks=[es])
+lstm_pred = lstm.predict(X_test, verbose=0)
+lstm_score, _, lstm_inv = evaluate_model(y_test, lstm_pred)
+print(f"LSTM      - RMSE: {lstm_score['RMSE']:,.2f} | MAE: {lstm_score['MAE']:,.2f} | R2: {lstm_score['R2']:.4f}")
+
+
+# =====================
+# 12. 모델 학습 (GRU)
+# =====================
+print("\n[GRU 학습 중...]")
+gru = build_model('GRU')
+gru_hist = gru.fit(X_train, y_train, epochs=150, batch_size=8,
+                   validation_split=0.1, verbose=0, callbacks=[es])
+gru_pred = gru.predict(X_test, verbose=0)
+gru_score, _, gru_inv = evaluate_model(y_test, gru_pred)
+print(f"GRU       - RMSE: {gru_score['RMSE']:,.2f} | MAE: {gru_score['MAE']:,.2f} | R2: {gru_score['R2']:.4f}")
+
+
+# =====================
+# 13. 학습 곡선 시각화 (Loss)
+# =====================
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+for ax, hist, title in zip(
+    axes,
+    [rnn_hist, lstm_hist, gru_hist],
+    ['SimpleRNN - Loss', 'LSTM - Loss', 'GRU - Loss']
+):
+    ax.plot(hist.history['loss'], label='Train Loss', color='steelblue')
+    ax.plot(hist.history['val_loss'], label='Validation Loss', color='orange')
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel('Loss')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('04_loss_curve.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 04_loss_curve.png 저장 완료")
+
+
+# =====================
+# 14. 모델 비교 - Scatter (Actual vs Predicted)
+# =====================
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+for ax, y_pred, title, color in zip(
+    axes,
+    [rnn_inv, lstm_inv, gru_inv],
+    ['SimpleRNN: 실제 vs 예측', 'LSTM: 실제 vs 예측', 'GRU: 실제 vs 예측'],
+    ['#4C72B0', '#55A868', '#C44E52']
+):
+    ax.scatter(y_true_inv, y_pred, alpha=0.4, color=color)
+    ax.plot([y_true_inv.min(), y_true_inv.max()],
+            [y_true_inv.min(), y_true_inv.max()], 'r--', linewidth=1.5)
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel('실제값')
+    ax.set_ylabel('예측값')
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('05_model_compare_scatter.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 05_model_compare_scatter.png 저장 완료")
+
+
+# =====================
+# 15. 성능 비교 바차트
+# =====================
+results = pd.DataFrame({
+    '모델':  ['SimpleRNN', 'LSTM', 'GRU'],
+    'RMSE': [rnn_score['RMSE'], lstm_score['RMSE'], gru_score['RMSE']],
+    'MAE':  [rnn_score['MAE'],  lstm_score['MAE'],  gru_score['MAE']],
+    'R2':   [rnn_score['R2'],   lstm_score['R2'],   gru_score['R2']]
+})
+
+print("\n" + "=" * 50)
+print("모델 성능 비교")
+print("=" * 50)
+print(results.to_string(index=False))
+
+fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+colors = ['#4C72B0', '#55A868', '#C44E52']
+
+for ax, metric in zip(axes, ['RMSE', 'MAE', 'R2']):
+    bars = ax.bar(results['모델'], results[metric], color=colors)
+    ax.set_title(f'모델별 {metric} 비교', fontsize=12)
+    ax.set_ylabel(metric)
+    for bar, val in zip(bars, results[metric]):
+        ax.text(bar.get_x() + bar.get_width()/2,
+                bar.get_height(), f'{val:,.2f}',
+                ha='center', va='bottom', fontsize=10)
+    ax.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig('06_model_compare_bar.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 06_model_compare_bar.png 저장 완료")
+
+
+# =====================
+# 16. 모델 예측 - 시계열 그래프
+# =====================
+fig, ax = plt.subplots(figsize=(14, 5))
+x_axis = range(len(y_true_inv))
+
+ax.plot(x_axis, y_true_inv, label='실제 주문량',
+        color='steelblue', linewidth=2)
+ax.plot(x_axis, lstm_inv, label='LSTM 예측',
+        color='crimson', linestyle='--', linewidth=1.8)
+ax.fill_between(x_axis,
+                lstm_inv * 0.85, lstm_inv * 1.15,
+                alpha=0.2, color='crimson', label='예측 범위 (±15%)')
+ax.set_title('LSTM - 실제값 vs 예측값 (테스트 구간)', fontsize=13)
+ax.set_xlabel('Time Step')
+ax.set_ylabel('주문량')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('07_actual_vs_predicted.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✅ 07_actual_vs_predicted.png 저장 완료")
+
+
